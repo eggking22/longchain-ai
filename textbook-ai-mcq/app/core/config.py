@@ -24,8 +24,19 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = ""
     LLM_MODEL: str = ""
 
-    # Vector search — reserved for later phases.
-    EMBEDDING_MODEL: str = ""
+    # Embedding access — OpenAI-compatible endpoint (default: Zhipu bigmodel).
+    # "hash" selects the deterministic offline provider used by tests/CI.
+    EMBEDDING_BASE_URL: str = "https://open.bigmodel.cn/api/paas/v4"
+    EMBEDDING_API_KEY: str = ""  # falls back to LLM_API_KEY when empty
+    EMBEDDING_MODEL: str = "embedding-3"
+    EMBEDDING_DIM: int = 1024
+    EMBEDDING_BATCH_SIZE: int = 64
+
+    # Hybrid retrieval knobs (see app/services/retrieval/config.py)
+    RETRIEVAL_DENSE_TOP_K: int = 20
+    RETRIEVAL_SPARSE_TOP_K: int = 20
+    RETRIEVAL_RRF_K: int = 60
+    RETRIEVAL_MIN_CHUNK_CHARS: int = 10  # drop front-matter/noise chunks at index time
 
     # Parser / storage locations (relative to project root unless absolute)
     UPLOADS_DIR: str = "uploads"

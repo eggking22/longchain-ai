@@ -13,6 +13,10 @@ httpx==0.27.2
 python-dotenv==1.0.1
 pytest==9.1.1
 
+# --- Phase 2: hybrid retrieval (BM25 + dense) ---
+jieba==0.42.1            # Chinese tokenizer, shared by indexing and retrieval
+rank-bm25==0.2.2         # BM25Okapi (numpy-only); vectors go through httpx + numpy
+
 # --- Reserved for later phases (not installed yet) ---
 # psycopg2-binary   # PostgreSQL driver (vector DB phase)
 # pgvector          # pgvector SQLAlchemy support (vector DB phase)
