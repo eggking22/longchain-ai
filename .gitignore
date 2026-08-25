@@ -1,0 +1,69 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+develop-eggs/
+.installed.cfg
+MANIFEST
+.python-version
+Pipfile.lock
+
+# ===== Virtual environments =====
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+ENV/
+
+# ===== Test / tooling caches =====
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# ===== Databases / local data =====
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+
+# ===== Logs & temp files =====
+logs/
+*.log
+*.tmp
+*.bak
+tmp/
+
+# ===== IDE / editor =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ===== OS =====
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# ===== AI agent 本地会话文件 =====
+.zcode/
+.claude/
+.cursor/
