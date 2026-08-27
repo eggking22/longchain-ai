@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     RETRIEVAL_RRF_K: int = 60
     RETRIEVAL_MIN_CHUNK_CHARS: int = 10  # drop front-matter/noise chunks at index time
 
+    # Evidence gate knobs (see app/services/evidence/config.py)
+    EVIDENCE_COVERAGE_THRESHOLD: float = 0.8  # coverage_score must reach this to pass
+    EVIDENCE_TERM_WEIGHT: float = 0.75  # weight of query-term coverage in the heuristic score
+    EVIDENCE_SPARSE_WEIGHT: float = 0.15  # weight of the BM25 strength signal
+    EVIDENCE_HIT_WEIGHT: float = 0.1  # weight of the multi-hit depth signal
+    EVIDENCE_SPARSE_SATURATE: float = 12.0  # BM25 top score mapped to full signal
+    EVIDENCE_HIT_FLOOR: float = 2.0  # a hit only counts toward depth above this BM25 score
+    EVIDENCE_WINDOW: int = 5  # hits cited in the coverage report
+    EVIDENCE_COVERAGE_POOL: int = 8  # deeper pool inspected for term coverage (>= window)
+
     # Parser / storage locations (relative to project root unless absolute)
     UPLOADS_DIR: str = "uploads"
     ARTIFACTS_DIR: str = "data"
@@ -49,6 +59,11 @@ class Settings(BaseSettings):
     PARSER_CHUNK_TARGET_CHARS: int = 600
     PARSER_CHUNK_MAX_CHARS: int = 1200
     PARSER_CHUNK_OVERLAP_SENTENCES: int = 1
+
+    # Paper figure semantics knobs (see app/services/paper_semantics/config.py)
+    PAPER_SEMANTICS_MAX_EVIDENCE_PER_FIGURE: int = 12  # cap on the per-figure evidence bundle
+    PAPER_SEMANTICS_MAX_METHODS_PARAGRAPHS: int = 4  # top-N Methods paragraphs kept as supporting evidence
+    PAPER_SEMANTICS_CAPTION_MAX_CHARS: int = 400  # longer caption-start paragraphs are not captions
 
 
 @lru_cache

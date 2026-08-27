@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Question Review — 人工审核</title>
+<style>
+  :root { --line:#ddd; --ok:#1a7f37; --bad:#c62828; --muted:#666; --bg:#f6f8fa; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; margin:0; background:var(--bg); color:#111; }
+  header { background:#0f2744; color:#fff; padding:12px 20px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header input { padding:6px 10px; border-radius:6px; border:none; width:220px; }
+  header button { padding:6px 14px; border-radius:6px; border:none; background:#3b82f6; color:#fff; cursor:pointer; }
+  header button:hover { background:#2563eb; }
+  #stats { font-size:12px; color:#cfe3ff; }
+  .layout { display:flex; min-height: calc(100vh - 52px); }
+  nav#figures { width:230px; background:#fff; border-right:1px solid var(--line); padding:10px; overflow-y:auto; }
+  nav#figures .fig { padding:8px 10px; border-radius:6px; cursor:pointer; font-size:13px; margin-bottom:4px; border:1px solid transparent; }
+  nav#figures .fig:hover { background:#eef4ff; }
+  nav#figures .fig.active { background:#dbeafe; border-color:#93c5fd; font-weight:600; }
+  nav#figures .fig .st { font-size:11px; color:var(--muted); display:block; }
+  main { flex:1; padding:16px 22px; overflow-y:auto; }
+  .figure-head { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin-bottom:14px; }
+  .figure-head h2 { margin:0 0 6px; font-size:17px; }
+  .figure-head .meta { font-size:12px; color:var(--muted); }
+  .figure-head .experiment { font-size:13px; margin-top:8px; padding:8px 10px; background:var(--bg); border-radius:6px; }
+  .set { background:#fff; border:1px solid var(--line); border-radius:8px; margin-bottom:16px; }
+  .set-head { padding:10px 14px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .set-head .qid { font-weight:600; font-size:14px; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:10px; background:#eef; color:#335; }
+  .blueprint { font-size:12px; color:var(--muted); padding:8px 14px 0; }
+  .statements { padding:10px 14px; }
+  .stmt { border:1px solid var(--line); border-radius:6px; padding:8px 10px; margin-bottom:8px; display:flex; gap:10px; align-items:flex-start; }
+  .stmt .label { font-weight:700; color:#3b82f6; width:18px; }
+  .stmt .body { flex:1; }
+  .stmt .zh { font-size:14px; }
+  .stmt .en { font-size:12px; color:var(--muted); margin-top:4px; display:none; }
+  .stmt.show-en .en { display:block; }
+  .stmt .tags { font-size:11px; margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .tag { background:#f1f3f5; border-radius:4px; padding:1px 6px; }
+  .tag.true { color:var(--ok); border:1px solid var(--ok); }
+  .tag.false { color:var(--bad); border:1px solid var(--bad); }
+  .ev-chip { cursor:pointer; color:#3b82f6; background:#eff6ff; border-radius:4px; padding:1px 6px; font-size:11px; }
+  .actions { padding:8px 14px 12px; display:flex; gap:8px; flex-wrap:wrap; }
+  .actions button { font-size:12px; padding:5px 12px; border-radius:6px; cursor:pointer; border:1px solid var(--line); background:#fff; }
+  .actions button.approve { background:var(--ok); color:#fff; border-color:var(--ok); }
+  .actions button.reject { background:var(--bad); color:#fff; border-color:var(--bad); }
+  .actions button.revise { background:#f59e0b; color:#fff; border-color:#f59e0b; }
+  .reviewed-approve { outline:2px solid var(--ok); }
+  .reviewed-reject { outline:2px solid var(--bad); opacity:.75; }
+  .reviewed-revise { outline:2px solid #f59e0b; }
+  #evidence-panel { position:fixed; right:0; top:52px; bottom:0; width:420px; background:#fff; border-left:1px solid var(--line); box-shadow:-2px 0 8px rgba(0,0,0,.08); padding:14px; overflow-y:auto; display:none; }
+  #evidence-panel.open { display:block; }
+  #evidence-panel h3 { font-size:13px; margin:0 0 8px; }
+  #evidence-panel .unit { font-size:12px; border:1px solid var(--line); border-radius:6px; padding:8px; margin-bottom:8px; }
+  #evidence-panel .unit .meta { color:var(--muted); font-size:11px; margin-bottom:4px; }
+  #evidence-panel .close { float:right; cursor:pointer; color:var(--muted); }
+  .empty { color:var(--muted); padding:30px; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Paper Question Review</h1>
+  <input id="doc-id" placeholder="doc_id，例如 paper_1" value="paper_1">
+  <button onclick="loadDoc()">加载</button>
+  <span id="stats"></span>
+</header>
+<div class="layout">
+  <nav id="figures"><div class="empty">加载论文后按 Figure 分组显示</div></nav>
+  <main id="main"><div class="empty">输入 doc_id 并点击「加载」<br>数据来自 /api/v1/paper-questions/{doc_id}</div></main>
+</div>
+<aside id="evidence-panel">
+  <span class="close" onclick="toggleEvidence(false)">✕ 关闭</span>
+  <h3>Evidence 原文</h3>
+  <div id="evidence-body"></div>
+</aside>
+
+<script>
+let DOC = null;           // loaded payload {doc_id, summary, figures[]}
+let ACTIVE_FIGURE = null;
+
+const REVIEW_KEY = doc => `mcq-review-${doc}`;
+function loadReviews(){ try { return JSON.parse(localStorage.getItem(REVIEW_KEY(DOC.doc_id)) || "{}"); } catch { return {}; } }
+function saveReviews(r){ localStorage.setItem(REVIEW_KEY(DOC.doc_id), JSON.stringify(r)); }
+
+async function loadDoc(){
+  const docId = document.getElementById('doc-id').value.trim();
+  if (!docId) return;
+  document.getElementById('main').innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    const res = await fetch(`/api/v1/paper-questions/${encodeURIComponent(docId)}`);
+    if (!res.ok) throw new Error((await res.json()).detail || res.status);
+    DOC = await res.json();
+    document.getElementById('stats').textContent =
+      `figures: ${DOC.figures.length} · sets: ${DOC.figures.reduce((n,f)=>n+f.question_sets.length,0)}`;
+    renderFigureNav();
+    if (DOC.figures.length) selectFigure(DOC.figures[0].figure_id);
+  } catch (err) {
+    document.getElementById('main').innerHTML = `<div class="empty">加载失败：${err.message}</div>`;
+  }
+}
+
+function renderFigureNav(){
+  const nav = document.getElementById('figures');
+  nav.innerHTML = '';
+  DOC.figures.forEach(f => {
+    const div = document.createElement('div');
+    div.className = 'fig' + (f.figure_id === ACTIVE_FIGURE ? ' active' : '');
+    div.innerHTML = `${f.figure_id}<span class="st">${f.status || ''} · ${f.question_sets.length} 组题目</span>`;
+    div.onclick = () => selectFigure(f.figure_id);
+    nav.appendChild(div);
+  });
+}
+
+function selectFigure(figureId){
+  ACTIVE_FIGURE = figureId;
+  renderFigureNav();
+  const fig = DOC.figures.find(f => f.figure_id === figureId);
+  const main = document.getElementById('main');
+  const exp = fig.experiment || {};
+  const expLines = [];
+  if (exp.research_question) expLines.push(`Q: ${exp.research_question}`);
+  if (exp.groups) expLines.push(`组别: ${(exp.groups.experimental||[]).join(', ') || '?'} vs ${(exp.groups.control||[]).join(', ') || '?'}`);
+  if (exp.variables && exp.variables.dependent) expLines.push(`指标: ${exp.variables.dependent.slice(0,3).join(', ')}`);
+  main.innerHTML = `
+    <div class="figure-head">
+      <h2>${fig.figure_id}${fig.kind === 'table' ? '（Table）' : ''}</h2>
+      <div class="meta">${fig.title || ''} · status: ${fig.status} · confidence: ${fig.confidence}</div>
+      ${expLines.length ? `<div class="experiment"><b>实验语义 / Experiment Summary</b><br>${expLines.join('<br>')}</div>` : ''}
+    </div>
+    <div id="sets"></div>`;
+  const sets = document.getElementById('sets');
+  if (!fig.question_sets.length) sets.innerHTML = '<div class="empty">该 Figure 无题目集合</div>';
+  fig.question_sets.forEach(set => sets.appendChild(renderSet(set)));
+}
+
+function renderSet(set){
+  const reviews = loadReviews();
+  const box = document.createElement('div');
+  box.className = 'set' + (reviews[set.draft_set_id] ? ` reviewed-${reviews[set.draft_set_id]}` : '');
+  box.innerHTML = `
+    <div class="set-head">
+      <span class="qid">${set.draft_set_id}</span>
+      <span class="badge">${set.question_type}</span>
+      <button style="font-size:11px;padding:2px 8px;cursor:pointer" onclick="this.closest('.set').classList.toggle('show-all-en')">
+        显示/隐藏英文
+      </button>
+    </div>
+    <div class="blueprint">Blueprint ${set.blueprint.blueprint_id}：${set.blueprint.question_focus || ''}</div>
+    <div class="statements"></div>
+    <div class="actions">
+      <button class="approve" onclick="review('${set.draft_set_id}','approve', this)">通过</button>
+      <button class="reject" onclick="review('${set.draft_set_id}','reject', this)">拒绝</button>
+      <button class="revise" onclick="review('${set.draft_set_id}','revise', this)">需要修改</button>
+    </div>`;
+  const list = box.querySelector('.statements');
+  set.statements.forEach(s => {
+    const row = document.createElement('div');
+    row.className = 'stmt show-en-' + (false);
+    row.innerHTML = `
+      <span class="label">${s.label}</span>
+      <span class="body">
+        <span class="zh">${s.statement_zh || s.statement}</span>
+        <span class="en">${s.statement}</span>
+        <span class="tags">
+          <span class="tag ${s.is_correct ? 'true' : 'false'}">${s.is_correct ? 'TRUE' : 'FALSE'}</span>
+          <span class="tag">${s.perturbation_type}</span>
+          ${s.evidence_ids.map(id => `<span class="ev-chip" onclick="showEvidence('${set.draft_set_id}','${id}')">${id}</span>`).join('')}
+        </span>
+      </span>`;
+    row.querySelector('.zh').onclick = () => row.classList.toggle('show-en');
+    list.appendChild(row);
+  });
+  return box;
+}
+
+function review(setId, verdict, btn){
+  const reviews = loadReviews();
+  if (reviews[setId] === verdict) delete reviews[setId]; else reviews[setId] = verdict;
+  saveReviews(reviews);
+  const setBox = btn.closest('.set');
+  setBox.classList.remove('reviewed-approve','reviewed-reject','reviewed-revise');
+  if (reviews[setId]) setBox.classList.add(`reviewed-${verdict}`);
+}
+
+async function showEvidence(setId, evidenceId){
+  const panel = document.getElementById('evidence-panel');
+  const body = document.getElementById('evidence-body');
+  body.innerHTML = '加载中…';
+  panel.classList.add('open');
+  try {
+    const res = await fetch(`/api/v1/paper-questions/${encodeURIComponent(DOC.doc_id)}/${encodeURIComponent(setId)}`);
+    if (!res.ok) throw new Error(res.status);
+    const detail = await res.json();
+    const unit = detail.statements.flatMap(s => s.evidence).find(e => e.evidence_id === evidenceId);
+    body.innerHTML = unit ? `
+      <div class="unit">
+        <div class="meta">${unit.evidence_id} · ${unit.evidence_type} · ${unit.section_type} · p.${unit.page_no}</div>
+        ${unit.text || '（无原文）'}
+      </div>` : `<div class="empty">未找到 ${evidenceId}</div>`;
+  } catch (err) { body.innerHTML = `<div class="empty">加载失败：${err.message}</div>`; }
+}
+
+function toggleEvidence(open){
+  document.getElementById('evidence-panel').classList.toggle('open', open);
+}
+</script>
+</body>
+</html>
