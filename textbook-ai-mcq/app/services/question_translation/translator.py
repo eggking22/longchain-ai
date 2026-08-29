@@ -15,18 +15,52 @@ from __future__ import annotations
 
 import re
 
-from .terminology import translate_entity
+from .terminology import translate_entity, translate_terms_only
 
 _VERB_UP = {"increases": "提高", "increase": "提高", "increased": "提高"}
 _VERB_DOWN = {"decreases": "降低", "decrease": "降低", "decreased": "降低"}
+
+_KIND_ZH = {
+    "percentage": "百分比",
+    "fold change": "倍数变化",
+    "p value": "p 值",
+    "concentration": "浓度",
+    "time": "时间",
+}
+
+# "According to {label}, the reported {kind} is {V}." — DATA fallback form
+_DATA_FALLBACK_KIND_RE = re.compile(
+    r"^According to (?P<label>.+?), the reported "
+    r"(?P<kind>percentage|fold change|p value|concentration|time) is (?P<value>.+?)\.?$"
+)
+# same, with an (LLM-extracted) object: "… the reported {kind} for {obj} is {V}."
+_DATA_OBJECT_KIND_RE = re.compile(
+    r"^According to (?P<label>.+?), the reported "
+    r"(?P<kind>percentage|fold change|p value|concentration|time) "
+    r"for (?P<obj>.+?) is (?P<value>.+?)\.?$"
+)
+_ACCORDING_RE = re.compile(r"^According to (?P<label>.+?), (?P<rest>.+)$")
 
 # Ordered template patterns → Chinese renderers (first match wins).
 # A space is kept between the direction verb and the endpoint so mixed
 # Chinese/Latin text reads naturally ("可提高 GFP 表达。").
 _TEMPLATES = [
+    # DATA fallback form: "According to {label}, the reported {kind} is {V}."
+    (
+        _DATA_FALLBACK_KIND_RE,
+        lambda m: f"根据{translate_entity(m['label'])}，论文报告的{_KIND_ZH[m['kind']]}为 {m['value']}。",
+    ),
+    # DATA fallback with LLM-extracted object: "According to {label}, the reported {kind} for {obj} is {V}."
+    (
+        _DATA_OBJECT_KIND_RE,
+        lambda m: (
+            f"根据{translate_entity(m['label'])}，论文报告的{translate_entity(m['obj'])}"
+            f"的{_KIND_ZH[m['kind']]}为 {m['value']}。"
+        ),
+    ),
     # "According to {label}, {rest}." — recursive on the inner statement
     (
-        re.compile(r"^According to (?P<label>.+?), (?P<rest>.+)$"),
+        _ACCORDING_RE,
         lambda m: f"根据{translate_entity(m['label'])}，{translate_statement(m['rest'])[0]}",
     ),
     # "{X} significantly {increases|decreases} {Y}."
@@ -132,10 +166,22 @@ def _term_fallback(text: str) -> str:
     return translate_entity(text)
 
 
-def translate_statement(statement: str) -> tuple[str, str]:
-    """Return (chinese, method) for one English statement."""
+def translate_statement(statement: str, data_statement: bool = False) -> tuple[str, str]:
+    """Return (chinese, method) for one English statement.
+
+    data_statement=True marks a DATA-type quote ("According to {figure}, {evidence
+    sentence}."): the evidence sentence is not a fixed template, so it renders
+    behind a 论文原文报告 wrapper with a registry term pass inside.
+    """
+    text = statement.strip()
+    if data_statement and not _DATA_FALLBACK_KIND_RE.match(text) and not _DATA_OBJECT_KIND_RE.match(text):
+        match = _ACCORDING_RE.match(text)
+        if match:
+            rest = match.group("rest").rstrip(".")
+            # registry terms localize, but no word is ever dropped — the quote is verbatim
+            return f"根据{translate_entity(match.group('label'))}，论文原文报告：{translate_terms_only(rest)}。", "template"
     for pattern, render in _TEMPLATES:
-        match = pattern.match(statement.strip())
+        match = pattern.match(text)
         if match:
             return render(match), "template"
-    return _term_fallback(statement.strip()), "term_fallback"
+    return _term_fallback(text), "term_fallback"

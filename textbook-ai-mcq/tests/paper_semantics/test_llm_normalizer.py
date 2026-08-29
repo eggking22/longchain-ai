@@ -271,3 +271,54 @@ class TestPipelineIntegration:
         assert figure2.method == "deterministic"
         assert "llm_error" in figure2.detail
         assert figure2.reconstruction_status == "SUFFICIENT"  # deterministic result stands
+
+    def test_novel_llm_conclusion_persists(self, tmp_path):
+        """An LLM conclusion NOT already in the draft must survive persistence.
+
+        Regression: LlmConclusion lacks interpretation_ids, so appending it raw
+        crashed build_figures_document (`AttributeError`); it must land as a
+        regular Conclusion with empty interpretation links.
+        """
+        import json as _json
+        from pathlib import Path
+
+        from app.services.paper_semantics import reconstruct_figures
+
+        from .conftest import build_paper_tree, write_document_artifact
+
+        write_document_artifact(build_paper_tree(), tmp_path, "paper-novel")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            content = request.content.decode("utf-8")
+            if "Figure: Figure 2" in content:
+                payload = _verdict_payload(
+                    conclusions=[
+                        {  # novel wording → not deduplicated against the draft
+                            "statement": "Treatment A reproducibly increases gene X expression.",
+                            "relationship_type": "causal",
+                            "evidence_ids": ["ev_f02_002"],
+                        }
+                    ]
+                )
+                body = _json.dumps(payload)
+            else:
+                body = _json.dumps(LlmNormalizationVerdict().model_dump())
+            return httpx.Response(200, json={"choices": [{"message": {"content": body}}]})
+
+        report = reconstruct_figures("paper-novel", tmp_path, normalizer=_normalizer(handler))
+        figure2 = next(f for f in report.figures if f.figure_id == "Figure 2")
+        assert figure2.method == "deterministic+llm"
+        assert any(
+            c.statement == "Treatment A reproducibly increases gene X expression."
+            and c.interpretation_ids == []
+            for c in figure2.experiment.conclusions
+        )
+        figures_doc = _json.loads(
+            (Path(tmp_path) / "paper_semantics" / "paper-novel" / "figures.json").read_text(encoding="utf-8")
+        )
+        entry = next(f for f in figures_doc["figures"] if f["figure_id"] == "Figure 2")
+        assert any(
+            c["statement"] == "Treatment A reproducibly increases gene X expression."
+            and c["interpretations"] == []
+            for c in entry["conclusions"]
+        )

@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-TranslationMethod = Literal["template", "term_fallback"]
+TranslationMethod = Literal["template", "term_fallback", "llm"]  # "llm": optional invariant-gated whole-sentence translation
 
 
 class MCQStatementZh(BaseModel):

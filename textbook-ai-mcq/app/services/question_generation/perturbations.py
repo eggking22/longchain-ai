@@ -48,6 +48,139 @@ _SIGNIFICANT_TRUE_RE = re.compile(r"^(?P<subject>.+?)\s+significantly\s+(?P<verb
 
 _BASE_VERB = {"increases": "increase", "decreases": "decrease"}
 
+# --- DATA statements: anchored verbatim evidence quote --------------------------------
+# "The reported value is 35%." says neither what was measured nor where. The
+# evidence sentence already carries the object ("DCs spent ∼35% of their time
+# …"), so the TRUE statement quotes it verbatim behind a figure anchor:
+#   According to Figure 1, DCs spent ∼35% of their time displaying … .
+# Cleanup is typographic only (line-break hyphens, dangling figure-reference
+# fragments); when the value cannot be safely quoted the statement falls back
+# to an anchored kind-labelled form — an object is never guessed.
+
+_KIND_LABELS = {
+    "percentage": "percentage",
+    "fold_change": "fold change",
+    "p_value": "p value",
+    "concentration": "concentration",
+    "time": "time",
+}
+_MAX_DATA_SENTENCE = 240
+
+# "dis- playing" → "displaying" (mid-word break after a lowercase word) and
+# "Color- coded" → "Color-coded" (compound broken at a line end after a capital)
+_HYPHEN_BREAK_RE = re.compile(r"(?P<left>[A-Za-z]+)-\s+(?P<right>[a-z][A-Za-z-]*)")
+# Nature-style unit spacing: U+2009 thin space / NBSP / narrow NBSP → ASCII space
+_THIN_SPACE_RE = re.compile(r"[\u2009\u00a0\u202f]")
+_MULTI_SPACE_RE = re.compile(r" {2,}")
+# caption panel prefix "a, GFP intensity…" → "GFP intensity…"
+_PANEL_PREFIX_RE = re.compile(r"^[a-h],\s+")
+# dangling "(Fig." / "(Extended Data Fig." tail left by abbreviation sentence splits
+_DANGLING_FIG_REF_RE = re.compile(r"\s*\((?:Extended Data |Supplementary )?Fig(?:ure)?\.?\s*[\w,\s–-]*$")
+# trailing pure figure reference "(Figure 6)" — the anchor already states the location
+_TRAILING_FIG_REF_RE = re.compile(r"\s*\((?:Extended Data |Supplementary )?Fig(?:ure)?\.?\s*[\w,\s–-]*\)\s*$")
+
+
+def _merge_hyphen_break(match: re.Match) -> str:
+    if match.group("left")[0].islower():
+        return f"{match.group('left')}{match.group('right')}"
+    return f"{match.group('left')}-{match.group('right')}"
+
+
+def normalize_typography(text: str) -> str:
+    """Whitespace-level normalization shared by statement building and LLM span validation."""
+    return _MULTI_SPACE_RE.sub(" ", _THIN_SPACE_RE.sub(" ", text))
+
+
+def _anchor_label(blueprint: QuestionBlueprint) -> str:
+    if blueprint.panel_ids:
+        return f"{blueprint.figure_id}{blueprint.panel_ids[0].lstrip('0123456789')}"
+    return blueprint.figure_id
+
+
+def _clean_data_sentence(sentence: str) -> str:
+    text = normalize_typography(sentence.strip())
+    text = _PANEL_PREFIX_RE.sub("", text)
+    text = _HYPHEN_BREAK_RE.sub(_merge_hyphen_break, text)
+    text = text.rstrip(".")  # the statement template adds its own terminal period
+    text = _DANGLING_FIG_REF_RE.sub("", text)
+    text = _TRAILING_FIG_REF_RE.sub("", text)
+    return text.strip().rstrip(",;").strip()
+
+
+def _truncate_data_sentence(body: str, value: str) -> str | None:
+    """Cap the quote at a clause boundary after the value; None → use the fallback form."""
+    if len(body) <= _MAX_DATA_SENTENCE:
+        return body
+    value_end = body.find(value)
+    if value_end < 0 or value_end + len(value) > _MAX_DATA_SENTENCE:
+        return None
+    window = body[:_MAX_DATA_SENTENCE]
+    cut = max(window.rfind(", "), window.rfind("; "), window.rfind(" and "))
+    if cut < value_end:
+        cut = window.rfind(" ")
+    return _DANGLING_FIG_REF_RE.sub("", body[:cut]).rstrip(" ,;")
+
+
+# glued digit+panel-letter with no unit ("2d") — a panel reference unless a real
+# sentence backs it ("6h incubation" keeps its incubation context)
+_PANEL_LABEL_VALUE_RE = re.compile(r"^\d+[a-h]$")
+
+
+def _looks_like_fragment(body: str) -> bool:
+    """Sentence-splitter artifacts: bare figure references ("2d and 3c"), condition scraps."""
+    if body.count(")") > body.count("("):
+        return True
+    return len(body.split()) < 5
+
+
+def data_statement_text(blueprint: QuestionBlueprint, object_phrase: str | None = None) -> str | None:
+    """DATA TRUE statement: figure anchor + verbatim evidence quote (or kind-label fallback).
+
+    object_phrase (optional, LLM-extracted and verbatim-validated upstream) upgrades
+    the kind-label fallback to "the reported {kind} for {object} is {value}."; the
+    verbatim quote always wins over both fallback forms.
+    """
+    detail = blueprint.detail
+    value = detail.get("data_value")
+    anchor = _anchor_label(blueprint)
+    if not value or not anchor:
+        return None
+    body = _clean_data_sentence(detail.get("sentence", ""))
+    if _looks_like_fragment(body) and _PANEL_LABEL_VALUE_RE.match(value):
+        return None  # panel label misread as a value ("2d" from "Fig. 2d and 3c") — skip, never guess
+    if not _looks_like_fragment(body):
+        for candidate in (value, value.rstrip(".")):  # upstream p values may carry a trailing dot
+            if candidate and candidate in body:
+                truncated = _truncate_data_sentence(body, candidate)
+                if truncated:
+                    return f"According to {anchor}, {truncated}."
+                break
+    label = _KIND_LABELS.get(detail.get("kind", ""), "value")
+    if object_phrase:
+        return f"According to {anchor}, the reported {label} for {object_phrase} is {value.rstrip('.')}."
+    return f"According to {anchor}, the reported {label} is {value.rstrip('.')}."
+
+
+def needs_object_extraction(blueprint: QuestionBlueprint) -> bool:
+    """True when a DATA statement will fall back to a kind label (quote unavailable).
+
+    Bogus panel-label values are excluded — their set is skipped entirely, so an
+    LLM extraction would be pointless.
+    """
+    if blueprint.question_type != "DATA_STATEMENT":
+        return False
+    value = blueprint.detail.get("data_value")
+    if not value:
+        return False
+    body = _clean_data_sentence(blueprint.detail.get("sentence", ""))
+    if _looks_like_fragment(body) and _PANEL_LABEL_VALUE_RE.match(value):
+        return False
+    if not _looks_like_fragment(body) and any(
+        candidate and candidate in body for candidate in (value, value.rstrip("."))
+    ):
+        return False  # the verbatim quote covers it
+    return True
+
 
 @dataclass
 class PerturbationContext:
@@ -67,7 +200,7 @@ class PerturbationContext:
     condition_findings: list[tuple[str, str, str]] = field(default_factory=list)  # (sentence, value, evidence_id)
 
 
-def build_true_statement(blueprint: QuestionBlueprint) -> str | None:
+def build_true_statement(blueprint: QuestionBlueprint, object_phrase: str | None = None) -> str | None:
     """The TRUE statement, derived only from blueprint-bound content."""
     detail = blueprint.detail
     if blueprint.question_type == "RESULT_INTERPRETATION" and detail.get("significance") == "significant":
@@ -79,10 +212,7 @@ def build_true_statement(blueprint: QuestionBlueprint) -> str | None:
             verb = "increases" if direction == "increase" else "decreases"
             return f"{subject} significantly {verb} {endpoint}."
     if blueprint.question_type == "DATA_STATEMENT":
-        value = detail.get("data_value")
-        if value:
-            return f"The reported value is {value}."
-        return None
+        return data_statement_text(blueprint, object_phrase=object_phrase)
     return blueprint.expected_answer or None
 
 
@@ -173,15 +303,21 @@ def panel_misattribution(text: str, context: PerturbationContext) -> str | None:
     if not context.sibling_labels:
         return None
     other = context.sibling_labels[0]
+    if text.startswith("According to "):
+        # DATA quotes already carry their anchor — misattribution swaps it instead
+        # of stacking a second "According to …" prefix
+        return _apply(text, re.sub(r"^According to [^,]+,", f"According to {other},", text, count=1))
     return _apply(text, f"According to {other}, {text}")
 
 
 def numeric_mutation(text: str, context: PerturbationContext, kind: str, current: str) -> str | None:
-    pool = [value for value, _eid in context.numeric_pool.get(kind, []) if value != current]
-    if not pool:
+    """Swap the reported value inside the anchored quote — everything else stays verbatim."""
+    current = current.rstrip(".")  # upstream p values may carry a trailing dot
+    pool = [value.rstrip(".") for value, _eid in context.numeric_pool.get(kind, []) if value.rstrip(".") != current]
+    if not pool or current not in text:
         return None
     replacement = pool[0]
-    return _apply(text, f"The reported value is {replacement}.")
+    return _apply(text, text.replace(current, replacement))
 
 
 def condition_mutation(text: str, context: PerturbationContext) -> tuple[str, list[str]] | None:
@@ -209,6 +345,14 @@ def _kind_of_value(value: str) -> str:
     return "concentration"
 
 
+def _condition_mutation_gate(text: str, context: PerturbationContext, blueprint: QuestionBlueprint):
+    # DATA quotes already carry their condition sentence; condition mutation there
+    # would duplicate numeric mutation's job (and historically emitted raw fragments)
+    if blueprint.question_type == "DATA_STATEMENT":
+        return (None, [])
+    return condition_mutation(text, context) or (None, [])
+
+
 PERTURBERS = {
     "DIRECTION_FLIP": lambda text, ctx, bp: (direction_flip(text, ctx), []),
     "SIGNIFICANCE_FLIP": lambda text, ctx, bp: (significance_flip(text, ctx), []),
@@ -226,5 +370,5 @@ PERTURBERS = {
         if bp.question_type == "DATA_STATEMENT"
         else (None, [])
     ),
-    "CONDITION_MUTATION": lambda text, ctx, bp: condition_mutation(text, ctx) or (None, []),
+    "CONDITION_MUTATION": _condition_mutation_gate,
 }

@@ -236,6 +236,8 @@ Swagger 文档：启动后访问 <http://127.0.0.1:8000/docs>
 - [x] Phase 5：Question Blueprint（确定性出题蓝图：四题型严格门控 + Evidence Store 溯源 + 字面数值抽取）
 - [x] MCQ Step 1：Statement Draft（每集 1 真 + ≤4 假：十类受控扰动、替换素材全部来自论文证据池、association 仅可被错误升级）
 - [x] MCQ Step 2：中文翻译层（statement_zh，术语表+模板，英文原文逐字保留）+ Review 审核前端（/review，通过/拒绝/需改 + 证据回链）
+- [x] DATA 陈述锚点引用：证据句原文（排版级清洗：细空格/断行连字符/面板标号）+ 图锚点；可选 LLM 对象抽取（verbatim-span 门控，--no-llm 可关）
+- [x] 可选 LLM 整句中文翻译（确定性验证门：数值/图锚点/方向极性/基因名逐字校验，失败回退术语表翻译；glm-4-flash ~2s/句，95%+ 过率）
 - [ ] PostgreSQL + pgvector 向量库接入（接口已对齐：vector(1024) + HNSW + tokens→text[]/GIN）
 - [ ] RAG 检索 API 化
 - [ ] LLM 出题（选择题生成）

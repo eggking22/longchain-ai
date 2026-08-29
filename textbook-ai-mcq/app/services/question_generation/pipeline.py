@@ -22,7 +22,14 @@ from app.services.question_blueprint import BlueprintConfig, generate_blueprints
 from app.services.question_blueprint.numeric import extract_numeric_findings
 
 from .config import DraftConfig
-from .perturbations import PERTURBERS, PERTURBATION_ORDER, PerturbationContext, build_true_statement
+from .llm_object_extractor import LlmObjectExtractionError, LlmObjectExtractor
+from .perturbations import (
+    PERTURBERS,
+    PERTURBATION_ORDER,
+    PerturbationContext,
+    build_true_statement,
+    needs_object_extraction,
+)
 
 # fixed priority order for blueprint selection within a figure
 _TYPE_PRIORITY = ("RESULT_INTERPRETATION", "SIMPLE_PREDICTION", "DATA_STATEMENT", "EXPERIMENTAL_DESIGN")
@@ -34,10 +41,23 @@ def generate_question_drafts(
     config: DraftConfig | None = None,
     semantic_config: PaperSemanticsConfig | None = None,
     persist: bool = True,
+    object_extractor: LlmObjectExtractor | None = None,
+    semantic_report: PaperSemanticsReport | None = None,
 ) -> QuestionDraftReport:
-    """Generate deterministic statement-draft sets for a document."""
+    """Generate deterministic statement-draft sets for a document.
+
+    object_extractor (optional LLM patch, verbatim-span-gated) only upgrades DATA
+    statements that already fell back to a kind label; without it — or whenever it
+    errors or is rejected — the deterministic result stands unchanged.
+
+    semantic_report (optional): a precomputed PaperSemanticsReport to reuse instead
+    of reconstructing — additive parameter, default behavior unchanged (same seam
+    as generate_blueprints; lets an LLM-normalized report flow into the drafts).
+    """
     config = config or DraftConfig()
-    semantics = reconstruct_figures(doc_id, artifacts_root, config=semantic_config, persist=False)
+    if semantic_report is None:
+        semantic_report = reconstruct_figures(doc_id, artifacts_root, config=semantic_config, persist=False)
+    semantics = semantic_report
     blueprints = generate_blueprints(
         doc_id, artifacts_root, config=BlueprintConfig(), semantic_report=semantics, persist=False
     )
@@ -46,13 +66,24 @@ def generate_question_drafts(
     set_counter: dict[str, int] = {}
     skipped: dict[str, int] = {}
     draft_sets: list[StatementDraftSet] = []
+    extraction_stats = {"extracted": 0, "rejected": 0, "errors": 0}
 
     figures_by_id = {figure.figure_id: figure for figure in semantics.figures}
     for figure in semantics.figures:
         selected = _select_blueprints(figure.figure_id, blueprints, config)
         for blueprint in selected:
             context = _context_for(blueprint, figure, figures_by_id, numeric_pool)
-            draft_set = _build_set(blueprint, context, set_counter, config.max_perturbations_per_set)
+            object_phrase, extraction_note = _object_for(
+                blueprint, figure, object_extractor, extraction_stats
+            )
+            draft_set = _build_set(
+                blueprint,
+                context,
+                set_counter,
+                config.max_perturbations_per_set,
+                object_phrase=object_phrase,
+                extraction_note=extraction_note,
+            )
             if draft_set is None:
                 skipped["no_perturbation_applied"] = skipped.get("no_perturbation_applied", 0) + 1
                 continue
@@ -76,7 +107,10 @@ def generate_question_drafts(
             "false_statements": statement_count - len(draft_sets),
             "by_perturbation": dict(sorted(by_perturbation.items())),
             "skipped": dict(sorted(skipped.items())),
-            "method": "deterministic",
+            "method": "deterministic+llm"
+            if object_extractor is not None and extraction_stats["extracted"]
+            else "deterministic",
+            **({"object_extraction": dict(extraction_stats)} if object_extractor is not None else {}),
         },
         draft_sets=draft_sets,
     )
@@ -197,19 +231,55 @@ def _context_for(
     )
 
 
+def _object_for(
+    blueprint: QuestionBlueprint,
+    figure: FigureSemantic,
+    extractor: LlmObjectExtractor | None,
+    stats: dict[str, int],
+) -> tuple[str | None, str | None]:
+    """Optional LLM object extraction — only for DATA fallbacks, never for quotable ones."""
+    if extractor is None or not needs_object_extraction(blueprint):
+        return None, None
+    texts = [blueprint.detail.get("sentence", "")] + [
+        evidence.text for evidence in figure.evidence if evidence.evidence_id in blueprint.evidence_ids
+    ]
+    try:
+        phrase = extractor.extract(
+            value=blueprint.detail.get("data_value", ""),
+            kind=blueprint.detail.get("kind", ""),
+            texts=texts,
+        )
+    except LlmObjectExtractionError:
+        stats["errors"] += 1
+        return None, "llm_error"
+    if phrase is None:
+        stats["rejected"] += 1
+        return None, "llm_rejected"
+    stats["extracted"] += 1
+    return phrase, None
+
+
 def _build_set(
     blueprint: QuestionBlueprint,
     context: PerturbationContext,
     set_counter: dict[str, int],
     max_perturbations: int,
+    object_phrase: str | None = None,
+    extraction_note: str | None = None,
 ) -> StatementDraftSet | None:
-    true_statement = build_true_statement(blueprint)
+    true_statement = build_true_statement(blueprint, object_phrase=object_phrase)
     if not true_statement or not blueprint.evidence_ids:
         return None
 
     unit = blueprint.experiment_id.removeprefix("exp_") or blueprint.figure_id.replace(" ", "")
     set_counter[unit] = set_counter.get(unit, 0) + 1
     set_id = f"qd_{unit}_{set_counter[unit]:03d}"
+
+    true_detail = {"source": "blueprint_expected_answer"}
+    if object_phrase:
+        true_detail.update(object=object_phrase, object_extraction="llm")
+    elif extraction_note:
+        true_detail["object_extraction"] = extraction_note
 
     statements = [
         StatementDraft(
@@ -222,7 +292,7 @@ def _build_set(
             perturbation_type="NONE",
             evidence_ids=list(blueprint.evidence_ids),
             confidence=blueprint.confidence,
-            detail={"source": "blueprint_expected_answer"},
+            detail=true_detail,
         )
     ]
     seen = {true_statement}

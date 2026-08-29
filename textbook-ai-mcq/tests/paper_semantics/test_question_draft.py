@@ -12,7 +12,15 @@ from pathlib import Path
 
 import pytest
 
+from app.schemas.question_blueprint import QuestionBlueprint
 from app.services.question_generation import DraftConfig, generate_question_drafts
+from app.services.question_generation.perturbations import (
+    PERTURBERS,
+    PerturbationContext,
+    build_true_statement,
+    numeric_mutation,
+    panel_misattribution,
+)
 
 from .conftest import build_paper_tree, write_document_artifact
 
@@ -138,24 +146,187 @@ class TestPerturbations:
 
 
 class TestDataPerturbations:
-    def test_numeric_mutation_uses_literal_pool_only(self, numeric_report):
+    def test_numeric_mutation_swaps_value_inside_quote(self, numeric_report):
+        import re
+
         data_sets = [d for d in numeric_report.draft_sets if d.question_type == "DATA_STATEMENT"]
         assert data_sets, "numeric corpus must produce DATA sets"
         mutations = [s for d in data_sets for s in d.statements if s.perturbation_type == "NUMERIC_MUTATION"]
         assert mutations
         literal_values = {"30%", "50%"}
-        for statement in mutations:
-            value = statement.statement.removeprefix("The reported value is ").removesuffix(".")
-            assert value in literal_values, value  # never a fabricated number
 
-    def test_true_data_statement_reports_literal(self, numeric_report):
+        def skeleton(text: str) -> str:
+            return re.sub(r"\d[\d.]*", "#", text)
+
+        for statement in mutations:
+            base = statement.detail["base"]
+            assert skeleton(statement.statement) == skeleton(base)  # only the value changed
+            assert any(v in statement.statement for v in literal_values)  # never a fabricated number
+
+    def test_true_data_statement_is_anchored_quote(self, numeric_report):
         data_sets = [d for d in numeric_report.draft_sets if d.question_type == "DATA_STATEMENT"]
-        true_statement = next(s for s in data_sets[0].statements if s.is_correct)
-        assert true_statement.statement in (
-            "The reported value is 30%.",
-            "The reported value is 50%.",
-            "The reported value is p < 0.01.",
+        true_statement = next(s for d in data_sets for s in d.statements if s.is_correct)
+        assert true_statement.statement.startswith("According to Figure 6, ")
+        assert "30%" in true_statement.statement
+        assert "reduced migration distance" in true_statement.statement  # object context quoted verbatim
+
+
+class TestDataStatementAnchors:
+    """DATA statements quote the evidence sentence behind a figure anchor."""
+
+    @staticmethod
+    def _blueprint(sentence, value="30%", kind="percentage", figure_id="Figure 2", panel_ids=None):
+        return QuestionBlueprint(
+            blueprint_id="qb_f02_ds_001",
+            question_type="DATA_STATEMENT",
+            experiment_id="exp_f02",
+            figure_id=figure_id,
+            panel_ids=panel_ids or [],
+            question_focus="what value is reported",
+            reasoning_operation="quantitative_reading",
+            expected_answer=value,
+            evidence_ids=["ev_f02_001"],
+            detail={"data_value": value, "kind": kind, "sentence": sentence},
         )
+
+    def test_quote_is_anchored_and_verbatim(self):
+        bp = self._blueprint("DCs spent 30% of their time displaying diameters of >4 um.")
+        assert build_true_statement(bp) == (
+            "According to Figure 2, DCs spent 30% of their time displaying diameters of >4 um."
+        )
+
+    def test_line_break_hyphen_merged_and_dangling_ref_trimmed(self):
+        bp = self._blueprint("DCs spent 30% of their time dis- playing diameters of >4 um (Fig.")
+        assert build_true_statement(bp) == (
+            "According to Figure 2, DCs spent 30% of their time displaying diameters of >4 um."
+        )
+
+    def test_trailing_figure_reference_stripped(self):
+        bp = self._blueprint("Treatment D reduced migration distance by 30% (Figure 6).")
+        assert build_true_statement(bp) == "According to Figure 2, Treatment D reduced migration distance by 30%."
+
+    def test_panel_blueprint_anchor_includes_panel(self):
+        bp = self._blueprint("Signal rose to 30% of cells.", panel_ids=["2a"])
+        assert build_true_statement(bp) == "According to Figure 2a, Signal rose to 30% of cells."
+
+    def test_value_missing_from_sentence_falls_back_to_kind_label(self):
+        bp = self._blueprint("Migration distance was reduced.")
+        assert build_true_statement(bp) == "According to Figure 2, the reported percentage is 30%."
+
+    def test_concentration_kind_label(self):
+        bp = self._blueprint("No usable sentence.", value="25 uM", kind="concentration")
+        assert build_true_statement(bp) == "According to Figure 2, the reported concentration is 25 uM."
+
+    def test_long_sentence_truncated_at_clause_after_value(self):
+        front = "Treatment F reduced migration distance by 30% in the confined chamber"
+        tail = ", and the effect was reproduced across replicates " + "with fully consistent results " * 8
+        bp = self._blueprint(front + tail + " in all experiments.")
+        statement = build_true_statement(bp)
+        assert statement.startswith(f"According to Figure 2, {front}")
+        assert statement.endswith("confined chamber.")
+        assert len(statement) <= 260  # 240-char body cap + anchor + period
+
+    def test_value_beyond_cap_falls_back(self):
+        padding = " ".join(f"qualifier{i}" for i in range(40))  # > 240 chars before the value
+        bp = self._blueprint(f"{padding} the level reached 30% overall.")
+        assert build_true_statement(bp) == "According to Figure 2, the reported percentage is 30%."
+
+    def test_splitter_fragment_never_quoted(self):
+        # sentence-splitter artifact ("2d and 3c).") must not become the quoted object
+        bp = self._blueprint("2d and 3c).", value="6 h", kind="time")
+        assert build_true_statement(bp) == "According to Figure 2, the reported time is 6 h."
+
+    def test_panel_label_value_with_fragment_skipped(self):
+        # "2d" from "Fig. 2d and 3c" is a panel reference, not a time — no statement at all
+        bp = self._blueprint("2d and 3c).", value="2d", kind="time")
+        assert build_true_statement(bp) is None
+
+    def test_glued_time_with_real_sentence_kept(self):
+        bp = self._blueprint("Cells were incubated for 6h before imaging wells.", value="6h", kind="time")
+        assert build_true_statement(bp) == "According to Figure 2, Cells were incubated for 6h before imaging wells."
+
+    def test_trailing_dot_in_value_normalized(self):
+        # upstream p-value literals may carry their own terminal dot — never emit ".."
+        bp = self._blueprint("No usable sentence.", value="P < 0.0001.", kind="p_value")
+        assert build_true_statement(bp) == "According to Figure 2, the reported p value is P < 0.0001."
+
+    def test_numeric_mutation_normalizes_pool_dots(self):
+        context = PerturbationContext(numeric_pool={"p_value": [("P < 0.0001.", "ev_x")]})
+        text = "According to Figure 2, the reported p value is p = 0.003."
+        assert numeric_mutation(text, context, "p_value", "p = 0.003") == (
+            "According to Figure 2, the reported p value is P < 0.0001."
+        )
+
+    def test_thin_space_sentence_quoted_with_panel_prefix_stripped(self):
+        # Nature typesets units with U+2009; the extracted value is ASCII-normalized —
+        # whitespace normalization must reconcile the two before the substring check
+        sentence = "a, GFP intensity in DCs treated with the cPLA2 inhibitor AACOF3 (25\u2009µM) or control."
+        bp = self._blueprint(sentence, value="25 µM", kind="concentration")
+        assert build_true_statement(bp) == (
+            "According to Figure 2, GFP intensity in DCs treated with the cPLA2 inhibitor AACOF3 (25 µM) or control."
+        )
+
+    def test_capitalized_compound_keeps_hyphen(self):
+        bp = self._blueprint("Color- coded z frames of untreated LifeAct DCs showed signal in 30% of cells.")
+        assert build_true_statement(bp) == (
+            "According to Figure 2, Color-coded z frames of untreated LifeAct DCs showed signal in 30% of cells."
+        )
+
+    def test_numeric_mutation_on_normalized_quote(self):
+        context = PerturbationContext(numeric_pool={"concentration": [("30 µM", "ev_x")]})
+        quote = (
+            "According to Figure 2, GFP intensity in DCs treated with the cPLA2 "
+            "inhibitor AACOF3 (25 µM) or control."
+        )
+        assert numeric_mutation(quote, context, "concentration", "25 µM") == (
+            "According to Figure 2, GFP intensity in DCs treated with the cPLA2 "
+            "inhibitor AACOF3 (30 µM) or control."
+        )
+
+    def test_numeric_mutation_edits_quote_in_place(self):
+        context = PerturbationContext(numeric_pool={"percentage": [("50%", "ev_x")]})
+        quote = "According to Figure 2, Signal rose to 30% of cells."
+        assert numeric_mutation(quote, context, "percentage", "30%") == (
+            "According to Figure 2, Signal rose to 50% of cells."
+        )
+        assert numeric_mutation("No value here.", context, "percentage", "30%") is None
+
+    def test_panel_misattribution_swaps_anchor_of_quote(self):
+        context = PerturbationContext(sibling_labels=["Figure 3"])
+        quote = "According to Figure 2, Signal rose to 30% of cells."
+        assert panel_misattribution(quote, context) == "According to Figure 3, Signal rose to 30% of cells."
+        plain = "cPLA2 inhibitor increases GFP expression."
+        assert panel_misattribution(plain, context) == (
+            "According to Figure 3, cPLA2 inhibitor increases GFP expression."
+        )
+
+    def test_condition_mutation_excluded_for_data(self):
+        context = PerturbationContext(
+            numeric_pool={"concentration": [("25 uM", "ev_c"), ("10 uM", "ev_d")]},
+            condition_findings=[("Cells were treated with AACOF3 (25 uM).", "25 uM", "ev_c")],
+        )
+        data_bp = self._blueprint(
+            "Cells were treated with AACOF3 (25 uM).", value="25 uM", kind="concentration"
+        )
+        assert PERTURBERS["CONDITION_MUTATION"]("x", context, data_bp) == (None, [])
+        ri_bp = QuestionBlueprint(
+            blueprint_id="qb_f02_ri_001",
+            question_type="RESULT_INTERPRETATION",
+            experiment_id="exp_f02",
+            figure_id="Figure 2",
+            question_focus="direction",
+            reasoning_operation="result_interpretation",
+            expected_answer="x increases y.",
+        )
+        mutated = PERTURBERS["CONDITION_MUTATION"]("x increases y.", context, ri_bp)
+        assert mutated[0] == "Cells were treated with AACOF3 (10 uM)."
+
+    def test_data_sets_never_carry_condition_mutation(self, numeric_report):
+        for draft_set in numeric_report.draft_sets:
+            if draft_set.question_type != "DATA_STATEMENT":
+                continue
+            types = {s.perturbation_type for s in draft_set.statements}
+            assert "CONDITION_MUTATION" not in types
 
 
 class TestSafetyInvariants:
@@ -163,7 +334,9 @@ class TestSafetyInvariants:
         """Every false statement's changed tokens derive from the paper's literal pool."""
         import re
 
-        allowed_numbers = {"30%", "50%", "0.01", "30", "50"}
+        # "6" is the anchor figure number; the quote carries the paper's own
+        # sentence numbers (value + p value) — all from the corpus itself
+        allowed_numbers = {"30%", "50%", "0.01", "30", "50", "6"}
         for draft_set in numeric_report.draft_sets:
             for statement in draft_set.statements:
                 if statement.is_correct or statement.perturbation_type != "NUMERIC_MUTATION":
@@ -173,6 +346,26 @@ class TestSafetyInvariants:
 
 
 class TestArtifactIsolation:
+    def test_semantic_report_reused_when_provided(self, tmp_path, monkeypatch):
+        """Passing a precomputed report skips re-derivation (LLM-normalized seam)."""
+        from unittest.mock import patch
+
+        from app.services.paper_semantics import PaperSemanticsConfig, reconstruct_figures
+
+        write_document_artifact(build_paper_tree(), tmp_path, "draft-reuse")
+        reused = reconstruct_figures("draft-reuse", tmp_path, config=PaperSemanticsConfig(), persist=False)
+        with patch(
+            "app.services.question_generation.pipeline.reconstruct_figures",
+            side_effect=AssertionError("must not re-derive"),
+        ) as mock_reconstruct:
+            report = generate_question_drafts(
+                "draft-reuse", tmp_path, config=DraftConfig(), semantic_report=reused, persist=False
+            )
+        mock_reconstruct.assert_not_called()
+        assert report.draft_sets == generate_question_drafts(
+            "draft-reuse", tmp_path, config=DraftConfig(), persist=False
+        ).draft_sets  # same output as re-derivation
+
     def test_existing_files_unchanged_and_new_file_written(self, tmp_path):
         from app.services.paper_semantics import PaperSemanticsConfig, reconstruct_figures
 

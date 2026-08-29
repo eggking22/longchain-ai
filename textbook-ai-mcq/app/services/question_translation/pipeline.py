@@ -15,17 +15,42 @@ from pathlib import Path
 from app.schemas.mcq_zh import MCQDraftReportZh, MCQDraftSetZh, MCQStatementZh
 from app.schemas.question_draft import QuestionDraftReport
 
+from .llm_translator import LlmStatementTranslator, LlmTranslationError
 from .translator import translate_statement
 
 
-def translate_drafts(report: QuestionDraftReport) -> MCQDraftReportZh:
-    """Translate a draft report into its Chinese projection."""
+def _translate_one(
+    text: str, is_data_set: bool, translator: LlmStatementTranslator | None
+) -> tuple[str, str]:
+    """LLM first (invariant-gated, whole sentence); deterministic result as fallback."""
+    if translator is not None:
+        try:
+            chinese = translator.translate(text)
+        except LlmTranslationError:
+            chinese = None
+        if chinese is not None:
+            return chinese, "llm"
+    return translate_statement(text, data_statement=is_data_set)
+
+
+def translate_drafts(
+    report: QuestionDraftReport, translator: LlmStatementTranslator | None = None
+) -> MCQDraftReportZh:
+    """Translate a draft report into its Chinese projection.
+
+    translator (optional LLM layer) retranslates every statement as a whole
+    sentence behind the deterministic invariant gate; per-statement failure or
+    rejection falls back to the deterministic registry/template result.
+    """
     draft_sets: list[MCQDraftSetZh] = []
     method_counts: dict[str, int] = {"template": 0, "term_fallback": 0}
+    if translator is not None:
+        method_counts["llm"] = 0
     for draft_set in report.draft_sets:
+        is_data_set = draft_set.question_type == "DATA_STATEMENT"
         statements: list[MCQStatementZh] = []
         for statement in draft_set.statements:
-            chinese, method = translate_statement(statement.statement)
+            chinese, method = _translate_one(statement.statement, is_data_set, translator)
             method_counts[method] += 1
             detail = dict(statement.detail)
             detail["translation_method"] = method
@@ -59,7 +84,10 @@ def translate_drafts(report: QuestionDraftReport) -> MCQDraftReportZh:
         doc_id=report.doc_id,
         summary={
             **report.summary,
-            "translation": {"method": "deterministic-registry", "counts": method_counts},
+            "translation": {
+                "method": "deterministic-registry+llm" if translator is not None else "deterministic-registry",
+                "counts": method_counts,
+            },
         },
         draft_sets=draft_sets,
     )
@@ -83,9 +111,14 @@ def load_drafts(doc_id: str, artifacts_root: str | Path = "data") -> QuestionDra
     )
 
 
-def translate_document(doc_id: str, artifacts_root: str | Path = "data", persist: bool = True) -> MCQDraftReportZh:
+def translate_document(
+    doc_id: str,
+    artifacts_root: str | Path = "data",
+    persist: bool = True,
+    translator: LlmStatementTranslator | None = None,
+) -> MCQDraftReportZh:
     """Load the English drafts artifact and produce (and optionally persist) the Chinese one."""
-    report = translate_drafts(load_drafts(doc_id, artifacts_root))
+    report = translate_drafts(load_drafts(doc_id, artifacts_root), translator=translator)
     if persist:
         persist_mcq_zh(report, artifacts_root)
     return report

@@ -45,6 +45,7 @@ TERMINOLOGY: dict[str, str] = {
     "baseline": "基线",
     # common endpoints / measurements
     "body weight": "体重",
+    "migration distance": "迁移距离",
     "expression": "表达",
     "intensity": "强度",
     "migration": "迁移",
@@ -66,6 +67,16 @@ _DROP_WORDS = frozenset({"the", "a", "an", "of"})
 _PHRASES = sorted(TERMINOLOGY.items(), key=lambda item: -len(item[0]))
 
 
+def translate_terms_only(text: str) -> str:
+    """Apply the registry without dropping any word — for verbatim evidence quotes."""
+    if not text:
+        return ""
+    working = text
+    for phrase, translation in _PHRASES:
+        working = re.sub(re.escape(phrase), translation, working, flags=re.IGNORECASE)
+    return working.strip()
+
+
 def translate_entity(text: str) -> str:
     """Translate a treatment/endpoint/group name with the registry.
 
@@ -75,8 +86,5 @@ def translate_entity(text: str) -> str:
     """
     if not text:
         return ""
-    working = text
-    for phrase, translation in _PHRASES:
-        working = re.sub(re.escape(phrase), translation, working, flags=re.IGNORECASE)
-    tokens = [token for token in working.split() if token not in _DROP_WORDS]
+    tokens = [token for token in translate_terms_only(text).split() if token not in _DROP_WORDS]
     return " ".join(tokens).strip()

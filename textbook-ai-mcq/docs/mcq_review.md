@@ -15,8 +15,12 @@ TRUE/FALSE 标记、evidence_ids 一律不翻译。
 | `translator.py` | 有序模板 `_TEMPLATES`（According-to 前置优先）+ 动词映射 + `_glue()` 拉丁/中文边界补空格；返回 `(中文, method)` |
 | `pipeline.py` | `translate_drafts` / `translate_document` / `persist_mcq_zh`（读 `question_drafts.json` → 写 `mcq_drafts_zh.json`） |
 
-翻译方法两级：`template`（模板命中，paper_1 上 94 条）/ `term_fallback`
-（仅术语替换，11 条）。产物零时间戳、字节可复现。
+翻译方法三级：`llm`（可选整句翻译，paper_1 上 108/113 条）/ `template`（模板命中）/
+`term_fallback`（仅术语替换）。**LLM 翻译层**（`LlmStatementTranslator`，`--no-llm`
+可关；LLM_API_KEY+LLM_MODEL 配置时自动启用）：glm-4-flash 整句翻译 ~2s/句，每句必须
+通过**确定性验证门**——数值逐字、图锚点编号保持（接受"图N"本地化形式）、方向词极性
+不翻转（固定同义词集）、基因/试剂名 token 逐字——任一失败该句回退确定性翻译。
+DATA 类引用句在确定性路径走"论文原文报告："wrapper。产物零时间戳、字节可复现。
 
 ```bash
 python scripts/generate_mcq_zh.py --doc-id paper_1
@@ -60,8 +64,18 @@ pytest -q     # 349 passed, 1 skipped
 
 ## 5. paper_1 实测
 
-24 题组 / 105 陈述全部翻译（94 template + 11 term_fallback）；10 个 Figure
-分组展示；Figure 2 示例：
+22 题组 / 96 陈述（确定性基线）；LLM 全链路（语义归一化 + 翻译）下为
+29 题组 / 113 陈述、zh 翻译 108 llm + 5 确定性回退；DATA 类陈述 8/8 为图锚点 +
+证据句原文引用：
+
+```text
+✔ TRUE   根据 Figure 1，论文原文报告：We further observed that DCs spent ∼35% of
+         their time displaying diameters between ∼2 and 4 µm …
+✘ NUMERIC_MUTATION     同句仅 35% → 50%
+✘ PANEL_MISATTRIBUTION 同句锚点换成 Figure 2
+```
+
+Figure 2（RESULT_INTERPRETATION）示例：
 
 ```text
 A ✔ TRUE   cPLA2 抑制剂可提高 GFP 表达。

@@ -1,4 +1,4 @@
-"""Question Generation — Statement Draft layer (MCQ step 1, deterministic).
+"""Question Generation — Statement Draft layer (MCQ step 1).
 
 Pipeline (read-only reuse of Phase 5 and the semantic layer):
 
@@ -9,24 +9,31 @@ Pipeline (read-only reuse of Phase 5 and the semantic layer):
         ↓
     data/paper_semantics/{doc_id}/question_drafts.json
 
-本阶段不做：中文翻译、A/B/C/D 排版、MCQ Reviewer、L2 LLM。
+确定性核心；可选 LLM 对象抽取（LlmObjectExtractor，verbatim-span 门控）只在
+DATA 类型标签回退时作为补丁生效。本阶段不做：中文翻译、A/B/C/D 排版、
+MCQ Reviewer。
 """
 
 from __future__ import annotations
 
 from .config import DraftConfig
+from .llm_object_extractor import LlmObjectExtractionError, LlmObjectExtractor
 from .perturbations import (
     PERTURBATION_ORDER,
     PerturbationContext,
     build_true_statement,
+    needs_object_extraction,
 )
 from .pipeline import generate_question_drafts, persist_drafts
 
 __all__ = [
     "DraftConfig",
+    "LlmObjectExtractionError",
+    "LlmObjectExtractor",
     "PERTURBATION_ORDER",
     "PerturbationContext",
     "build_true_statement",
     "generate_question_drafts",
+    "needs_object_extraction",
     "persist_drafts",
 ]

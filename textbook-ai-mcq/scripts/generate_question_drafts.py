@@ -5,9 +5,12 @@ Usage (from the project root, with the bio-ai env active or via its python):
     python scripts/generate_question_drafts.py --doc-id paper_1
     python scripts/generate_question_drafts.py --doc-id paper_1 --figure 2 --json
 
-Deterministic only: one TRUE statement per set plus controlled minimal-edit
+Deterministic core: one TRUE statement per set plus controlled minimal-edit
 false statements (material from the paper's own evidence). No Chinese text,
-no A/B/C/D layout, no LLM. The artifact lands in
+no A/B/C/D layout. Optional LLM object extraction activates automatically
+when LLM_API_KEY and LLM_MODEL are configured in .env (and --no-llm is not
+passed); it only upgrades DATA kind-label fallbacks and is verbatim-span
+gated — otherwise the deterministic result stands. The artifact lands in
 data/paper_semantics/{doc_id}/question_drafts.json without touching any
 existing artifact file.
 """
@@ -56,6 +59,8 @@ def main() -> int:
     parser.add_argument("--doc-id", required=True, help="document id parsed by Phase 1 (see data/structure)")
     parser.add_argument("--figure", default="", help="restrict to one figure/table, e.g. 2 or 'Figure 2'")
     parser.add_argument("--artifacts-root", default=None, help="artifacts root (default: settings.ARTIFACTS_DIR)")
+    parser.add_argument("--no-llm", action="store_true",
+                        help="skip optional LLM object extraction even when LLM_API_KEY/LLM_MODEL are configured")
     parser.add_argument("--json", action="store_true", help="print the full QuestionDraftReport as JSON")
     args = parser.parse_args()
 
@@ -64,10 +69,24 @@ def main() -> int:
 
     from app.core.config import get_settings
 
-    artifacts = args.artifacts_root or get_settings().ARTIFACTS_DIR
+    settings = get_settings()
+    artifacts = args.artifacts_root or settings.ARTIFACTS_DIR
+
+    extractor = None
+    if not args.no_llm and settings.LLM_API_KEY and settings.LLM_MODEL:
+        from app.services.question_generation.llm_object_extractor import (
+            DEFAULT_LLM_BASE_URL,
+            LlmObjectExtractor,
+        )
+
+        extractor = LlmObjectExtractor(
+            base_url=settings.LLM_BASE_URL or DEFAULT_LLM_BASE_URL,
+            api_key=settings.LLM_API_KEY,
+            model=settings.LLM_MODEL,
+        )
 
     try:
-        report = generate_question_drafts(args.doc_id, artifacts, config=DraftConfig())
+        report = generate_question_drafts(args.doc_id, artifacts, config=DraftConfig(), object_extractor=extractor)
     except FileNotFoundError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

@@ -4,7 +4,9 @@ A Statement Draft is one structured statement for a future "which of the
 following statements are correct/incorrect?" question: exactly one TRUE
 statement per set (derived from a Question Blueprint's evidence-bound answer)
 plus controlled false statements produced by minimal, evidence-based
-perturbations. No Chinese rendering, no A/B/C/D layout, no LLM, no reviewer.
+perturbations. No Chinese rendering, no A/B/C/D layout, no reviewer. The only
+LLM involvement is the optional object extractor (LlmObjectExtraction), a
+patcher with a deterministic verbatim-span gate — never a replacement.
 """
 
 from __future__ import annotations
@@ -64,3 +66,15 @@ class QuestionDraftReport(BaseModel):
     doc_id: str
     summary: dict = Field(default_factory=dict)  # sets/statements counts, by_perturbation, skipped
     draft_sets: list[StatementDraftSet] = Field(default_factory=list)
+
+
+class LlmObjectExtraction(BaseModel):
+    """Optional LLM patch: the measured object for one DATA fallback value.
+
+    The phrase must be a verbatim contiguous span of the source evidence texts
+    (validated deterministically after the same whitespace normalization the
+    statement builder applies) or the whole extraction is rejected and the
+    kind-label fallback stands — the LLM never invents wording.
+    """
+
+    object_phrase: str = ""

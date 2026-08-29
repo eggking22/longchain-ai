@@ -65,6 +65,35 @@ class TestStatementLevelTranslation:
         zh, _ = translate_statement("The reported value is 30%.")
         assert zh == "论文报告的数值为 30%。"
 
+    def test_data_quote_wraps_original_sentence(self):
+        zh, method = translate_statement(
+            "According to Figure 1, DCs spent 30% of their time displaying diameters.",
+            data_statement=True,
+        )
+        assert method == "template"
+        assert zh == "根据Figure 1，论文原文报告：DCs spent 30% of their time displaying diameters。"
+
+    def test_data_fallback_kind_label_with_flag(self):
+        zh, method = translate_statement(
+            "According to Figure 2, the reported concentration is 25 uM.", data_statement=True
+        )
+        assert method == "template"
+        assert zh == "根据Figure 2，论文报告的浓度为 25 uM。"
+
+    def test_data_fallback_kind_label_without_flag(self):
+        # anchored kind form is a normal template too — flag-less callers keep working
+        zh, _ = translate_statement("According to Figure 2, the reported percentage is 30%.")
+        assert zh == "根据Figure 2，论文报告的百分比为 30%。"
+
+    def test_data_object_form_template(self):
+        # LLM-extracted object form — works with and without the data_statement flag
+        text = "According to Figure 6, the reported percentage for migration distance is 30%."
+        assert translate_statement(text) == ("根据Figure 6，论文报告的迁移距离的百分比为 30%。", "template")
+        assert translate_statement(text, data_statement=True) == (
+            "根据Figure 6，论文报告的迁移距离的百分比为 30%。",
+            "template",
+        )
+
     def test_prediction_template(self):
         zh, _ = translate_statement(
             "GFP expression would increase, as already observed in the cPLA2 inhibitor group."

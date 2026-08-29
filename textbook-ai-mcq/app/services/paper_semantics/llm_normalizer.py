@@ -22,6 +22,7 @@ from typing import Optional
 import httpx
 
 from app.schemas.paper_semantics import (
+    Conclusion,
     ExperimentModel,
     FigureReference,
     LlmNormalizationVerdict,
@@ -76,7 +77,7 @@ class LlmSemanticNormalizer:
         api_key: str,
         model: str,
         config: Optional[PaperSemanticsConfig] = None,
-        timeout: float = 60.0,
+        timeout: float = 180.0,  # real-run evidence: glm-4.6 on full evidence bundles exceeds 60s on ~70% of figures
         max_attempts: int = 2,
         client: Optional[httpx.Client] = None,
     ) -> None:
@@ -132,7 +133,16 @@ class LlmSemanticNormalizer:
         ]  # deterministic conclusions stay; LLM may append its own
         for conclusion in verdict.conclusions:
             if not any(c.statement == conclusion.statement for c in merged.conclusions):
-                merged.conclusions.append(conclusion)
+                # LLM conclusions cite evidence only — no interpretation links, so
+                # they must still land as regular Conclusion models (persistence
+                # and downstream consumers assume interpretation_ids exists)
+                merged.conclusions.append(
+                    Conclusion(
+                        statement=conclusion.statement,
+                        relationship_type=conclusion.relationship_type,
+                        evidence_ids=list(conclusion.evidence_ids),
+                    )
+                )
         return merged, None
 
     # --- validation -------------------------------------------------------------

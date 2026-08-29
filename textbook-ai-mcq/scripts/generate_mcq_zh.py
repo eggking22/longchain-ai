@@ -6,7 +6,11 @@ Usage (from the project root, with the bio-ai env active or via its python):
 
 Deterministic registry + template translation: English statements are kept
 verbatim, statement_zh is added, and numbers/genes/direction/TRUE-FALSE/
-evidence_ids are carried over untouched. The artifact lands in
+evidence_ids are carried over untouched. Optional LLM whole-sentence
+translation activates automatically when LLM_API_KEY and LLM_MODEL are
+configured in .env (and --no-llm is not passed); every LLM result passes the
+deterministic invariant gate (numbers/anchors/direction/gene names) or the
+statement falls back to the deterministic translation. The artifact lands in
 data/paper_semantics/{doc_id}/mcq_drafts_zh.json; question_drafts.json is
 never modified.
 """
@@ -52,6 +56,8 @@ def main() -> int:
     parser.add_argument("--doc-id", required=True, help="document id with existing question_drafts.json")
     parser.add_argument("--figure", default="", help="restrict output to one figure/table")
     parser.add_argument("--artifacts-root", default=None, help="artifacts root (default: settings.ARTIFACTS_DIR)")
+    parser.add_argument("--no-llm", action="store_true",
+                        help="skip optional LLM whole-sentence translation even when LLM_API_KEY/LLM_MODEL are configured")
     parser.add_argument("--json", action="store_true", help="print the full MCQDraftReportZh as JSON")
     args = parser.parse_args()
 
@@ -60,10 +66,24 @@ def main() -> int:
 
     from app.core.config import get_settings
 
-    artifacts = args.artifacts_root or get_settings().ARTIFACTS_DIR
+    settings = get_settings()
+    artifacts = args.artifacts_root or settings.ARTIFACTS_DIR
+
+    translator = None
+    if not args.no_llm and settings.LLM_API_KEY and settings.LLM_MODEL:
+        from app.services.question_translation.llm_translator import (
+            DEFAULT_LLM_BASE_URL,
+            LlmStatementTranslator,
+        )
+
+        translator = LlmStatementTranslator(
+            base_url=settings.LLM_BASE_URL or DEFAULT_LLM_BASE_URL,
+            api_key=settings.LLM_API_KEY,
+            model=settings.LLM_MODEL,
+        )
 
     try:
-        report = translate_document(args.doc_id, artifacts)
+        report = translate_document(args.doc_id, artifacts, translator=translator)
     except FileNotFoundError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
